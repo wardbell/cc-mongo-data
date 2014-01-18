@@ -1,42 +1,29 @@
 #!/%PROGRAMFILES%/nodejs/node
+/* THIS IS IT ... Run this JS file which has it all */
 console.log("Hello, Code Camper MongoDb Generator");
 console.log("Remember to first start cc-angular server so the generator can hit the Web API");
+console.log("Generator version: 0.1.0" );
 
-// app is located in node_modules because
-// I don't want to say './app' everywhere that I require the 'app' object
-// TODO: learn to alias in node
-var app = require('app');
-console.log("Generator version: " + app.version);
-
+require('./najaxAdapter');
 var breeze = require('./breeze.debug');
 var mongo = require('mongodb');
 var ObjectID = mongo.ObjectID;
-
-require('./najaxAdapter');
-require('./utilityFns');
-require('./customer');
-require('./product');
-require('./productOptions');
-require('./ccGenerator');
-
-app.toOutput = app.statsOut = function(line) {
-    console.log(line);
-    return line;
-};
 
 var Q = require('q');
 var nsend = Q.nsend;
 var db, em;
 var webApiServiceName = "http://localhost:58576/breeze/breeze";
 
+var stats = {
+    start: Date.now(),
+    end: Date.now()
+}
 function run(){
     var server = new mongo.Server('localhost', 27017, {auto_reconnect: true});
     db = new mongo.Db('ngCodeCamper', server, {fsync:true}); //{safe: false});
-    app.reset();
 
     return nsend(db,'open')
-        .then(getData)
-        .then(insertData)
+        .then(lookups)
         .fail(reportError)
         .fin(function(){ db.close(); console.log('Closing database')})
         .fin(displayStats);
@@ -44,260 +31,91 @@ function run(){
 run();
 
 //*** Private functions
-function getData(){
+function lookups(){
 
     breeze.config.initializeAdapterInstance('ajax', 'najax', true);
+    breeze.NamingConvention.camelCase.setAsDefault();
 
     em = new breeze.EntityManager(webApiServiceName);
     return new breeze.EntityQuery('Lookups')
         .using(em).execute()
         .then(function(data) {
+            var lookups = data.results[0];
             console.log("Got lookups")
+            return Q.all([
+                writeRooms(lookups.rooms),
+                writeTimeSlots(lookups.timeslots),
+                writeTracks(lookups.tracks)
+            ]);
         }).catch(function(error){
             console.log("Lookups fetch failed: "+(error.message || error));
+            console.log("Is the CC Web Api server running");
             throw error;
         });
-}
 
-function insertData(){
-    // insert reference collections first
-    return Q.all([
-        insertCustomers(),
-        insertOrderStatuses(),
-        insertProducts(),
-        insertProductOptions(),
-        insertProductSizes()
-    ])
-    .then(createCustomerOrders);
-}
-
-function insertCustomers() {
-    return getCleanCollection('Customer')
-        .then(function(collection){
-            var mCustomers = [];
-            var customers = app.customers;
-            customers.forEach(function(c){
-                mCustomers.push({
-                    firstName: c.firstName,
-                    lastName: c.lastName,
-                    phone: c.phone,
-                    email: c.email,
-                    address: {
-                        street: c.street,
-                        city: c.city,
-                        state: c.state,
-                        zip: c.zip
-                    }
-                });
-            });
-            return insertCollection(collection, mCustomers);
-        })
-        .then(getCustomers);
-
-        function getCustomers(collection){
-            return nsend(collection, "find")
-                .then(function(cursor){
-                    return nsend(cursor, "toArray");
-                })
-                .then(function(items){
-                    if (!items || items.length === 0) {
-                        throw new Error("Expected some 'Customers'; didn't get them");
-                    }
-                    console.log("Got "+items.length+" 'Customers'");
-                    app.reporter.stats[collection.collectionName] = items.length;
-                    app.customers = items; // overwrite app-level customers!
-                    return(collection);
-                });
-        }
-}
-
-function insertOrderStatuses() {
-    return getCleanCollection('OrderStatus')
-        .then(function(collection){
-            var mStatuses = [];
-            app.orderStatuses.forEach(function(s){
-                mStatuses.push({
-                    _id: s.id,
-                    name: s.name
-                });
-            });
-            return insertCollection(collection, mStatuses);
-        })
-        .then(verifyCollection);
-}
-
-function insertProducts() {
-    return getCleanCollection('Product')
-        .then(function(collection){
-            var mProducts = [];
-            var productTypes=['pizzas','salads','drinks'];
-            productTypes.forEach(function(typeName){
-                var products = app[typeName];
-                products.forEach(function(p){
-                    mProducts.push({
-                        _id: p.id,
-                        type: p.type,
-                        name: p.name,
-                        description: p.description,
-                        image: p.image,
-                        hasOptions: p.hasOptions?true:false,
-                        isPremium: p.isPremium?true:false,
-                        isVegetarian: p.isVegetarian?true:false,
-                        withTomatoSauce: p.withTomatoSauce?true:false,
-                        sizeIds: p.sizeIds
+    function writeRooms( items){
+        return getCleanCollection('Rooms')
+            .then(function(collection){
+                var mStuff = [];
+                items.forEach(function(item){
+                    mStuff.push({
+                        _id: item.id,
+                        name: item.name
                     });
                 });
-            });
-            return insertCollection(collection, mProducts);
-        })
-        .then(verifyCollection);
-}
-
-function insertProductOptions() {
-    return getCleanCollection('ProductOption')
-        .then(function(collection){
-            var mOptions = [];
-            var optionTypes=['crusts','sauces','cheeses','veggies','meats','spices','saladDressings'];
-            optionTypes.forEach(function(typeName){
-                var options = app[typeName];
-                options.forEach(function(o){
-                    var productTypes = [];
-                    if (o.isPizzaOption)  {productTypes.push('pizza');}
-                    if (o.isSaladOption)  {productTypes.push('salad');}
-                    mOptions.push({
-                        _id: o.id,
-                        type: o.type,
-                        name: o.name,
-                        factor: o.factor,
-                        productTypes: productTypes
+                return insertCollection(collection, mStuff);
+            })
+            .then(confirmSave);
+    }
+    function writeTimeSlots( items){
+        return getCleanCollection('TimeSlots')
+            .then(function(collection){
+                var mStuff = [];
+                items.forEach(function(item){
+                    mStuff.push({
+                        _id: item.id,
+                        start: item.start,
+                        isSessionSlot: item.isSessionSlot,
+                        duration: item.duration
                     });
                 });
-            });
-            return insertCollection(collection, mOptions);
-        })
-        .then(verifyCollection);
-}
-
-function insertProductSizes() {
-    return getCleanCollection('ProductSize')
-        .then(function(collection){
-            var mSizes = [];
-            app.productSizes.forEach(function(s){
-            mSizes.push({
-                _id: s.id,
-                type: s.type,
-                name: s.name,
-                price: s.price,
-                premiumPrice: s.premiumPrice,
-                toppingPrice: s.toppingPrice,
-                isGlutenFree: s.isGlutenFree?true:false
-            });
-            });
-            return insertCollection(collection, mSizes);
-        })
-        .then(verifyCollection);
-}
-
-function createCustomerOrders(){
-    app.idGenerators.newOrderId = ObjectID; // use Mongo Id generator
-    var zzaGenerator = new app.ZzaGenerator();
-    var deferred = Q.defer();
-    var insertCounter = 0;
-    var incInsertCounter = function () {insertCounter +=1;};
-    var decInsertCounter = function (){
-        insertCounter -= 1;
-        if (insertCounter < 0){deferred.reject(new Error('insertCounter became negative'))}
-        if (insertCounter === 0){
-            console.log('Saved last order');
-            deferred.resolve(true);
-        }
-    };
-    console.log ('Creating and saving customer orders');
-    var ordersCollection;
-    getCleanCollection('Order')
-        .then(function(collection){
-            ordersCollection = collection;
-            app.reporter.report = report; // replace w/ mongo report fn
-            zzaGenerator.makeCustomerOrders(); // Optional integer param limits number of customers
-        });
-    return deferred.promise;
-
-    function report(customer){
-        app.reportCustomerOrderStats(customer);
-        var orders = customer.orders, ordsLen = orders.length;
-        for (var i = 0 ; i < ordsLen; i++){
-            var order = orders[i];
-            var mOrder = {
-                _id: order.id,
-                customerId: customer._id,
-                name: customer.firstName+' '+customer.lastName,
-                statusId: order.status.id,
-                status: order.status.name,
-                ordered: order.orderDate,
-                phone: order.phone,
-                delivered: order.deliveryDate,
-                deliveryCharge: order.deliveryCharge,
-                itemsTotal: order.itemsTotal
-            };
-            if (order.deliveryCharge){
-                mOrder.deliveryAddress = customer.address;
-            }
-            var mItems = [];
-            var items = order.items, itemsLen = items.length;
-            for (var j = 0; j < itemsLen; j++){
-                var item = items[j];
-                var mItem = {
-                    productId: item.product.id,
-                    name: item.product.name,
-                    type: item.product.type,
-                    sizeId: item.size.id,
-                    size: item.size.name,
-                    qty: item.qty,
-                    unitPrice: item.unitPrice,
-                    totalPrice: item.totalPrice
-                };
-                if (item.instructions) {
-                    mItem.instructions = item.instructions;
-                }
-                var opts = item.options;
-                if (opts.length){
-                    var mOpts = [];
-                    opts.forEach(function(opt){
-                        mOpts.push({
-                           optionId: opt.option.id,
-                           name: opt.option.name,
-                           qty: opt.qty,
-                           price: opt.price
-                        });
+                return insertCollection(collection, mStuff);
+            })
+            .then(confirmSave);
+    }
+    function writeTracks( items){
+        return getCleanCollection('Tracks')
+            .then(function(collection){
+                var mStuff = [];
+                items.forEach(function(item){
+                    mStuff.push({
+                        _id: item.id,
+                        name: item.name
                     });
-                    mItem.options = mOpts;
-                }
-                mItems.push(mItem);
-            }
-            mOrder.items = mItems;
-            incInsertCounter();
-            ordersCollection.insert(mOrder, {safe: true}, function(err, recs){
-                if (err){
-                    var msg =  "Error on mOrder insert of id "+mOrder._id;
-                    var fullMsg = msg + "\n:"+err.message;
-                    console.log(fullMsg);
-                    console.dir(mOrder);
-                    err = new Error(msg + "; see console");
-                    deferred.reject(err);
-                    throw err; // hope to terminate further processing
-                } else {
-                    decInsertCounter();
-                }
-            });
-        }
+                });
+                return insertCollection(collection, mStuff);
+            })
+            .then(confirmSave);
     }
 }
 
-function displayStats(){
-    var statsOut = app.statsOut;
-    statsOut("\n=== STATS ===");
-    statsOut(JSON.stringify(app.reporter.stats, null, 2));
+function confirmSave(collection){
+    var cname = collection.collectionName;
+    return nsend(collection, "find")
+        .then(function(cursor){
+            return nsend(cursor, "toArray");
+        })
+        .then(function(items){
+            if (!items || items.length === 0) {
+                throw new Error("Expected some '"+cname+"'; didn't get them");
+            }
+            console.log("Got "+items.length+" '"+cname+"'");
+            stats[cname] = items.length;
+            return(collection);
+        });
 }
+
+
 
 //*** Utility functions ***
 function getCleanCollection(collectionName){
@@ -322,6 +140,7 @@ function getCleanCollection(collectionName){
         })
 }
 function insertCollection(collection, data){
+    console.log("Writing "+collection.collectionName);
     return nsend(collection, 'insert', data)
         .then(function(){
             return collection});
@@ -345,7 +164,7 @@ function verifyCollection(collection){
             } else {
                 console.dir(items,'items') ;
             }
-            app.reporter.stats[collectionName] = count;
+            app.stats[collectionName] = count;
             return collection;
         });
 }
@@ -354,19 +173,9 @@ function reportError(err){
     console.log('!!! run error:');
     console.dir(err);
 }
-//*** Test/Explore ***
-// For exploratory purposes
-// Call it within insertData()
-/*
-function insertTestItems(){
-    return getCleanCollection('test')
-        .then(function(collection){
-            return insertCollection(collection, [
-                {name:"The Dude"},
-                {name: "Walter"},
-                {name: "Donny"}
-            ]);
-        })
-        .then(verifyCollection);
+
+function displayStats(){
+    console.log("\n=== STATS ===");
+    console.log(JSON.stringify(stats, null, 2));
 }
-*/
+
