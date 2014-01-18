@@ -42,6 +42,7 @@ function run(){
             transfer('Persons', personMapper),
             transfer('Sessions', sessionMapper)
         ]);})
+        .then(getSpeakers) // to demonstrate how to do this
         .fail(reportError)
         .fin(function(){ db.close(); console.log('Closing database');})
         .fin(displayStats);
@@ -66,6 +67,36 @@ function lookups(){
         });
 }
 
+function getSpeakers(){
+    return getCollection("Sessions")
+        .then(function(collection){
+            return nsend(collection, 'distinct', 'speakerId')
+        })
+        .then(function(speakerIds){
+            if (!speakerIds){
+                throw new Error("mongoDb did not return a result when getting distinct sessions.speakerIds");
+            }
+            // get a projection of these speakers (persons among the speakerIds)
+            return getPersonsWithIds(speakerIds, {firstName:1, lastName:1});
+        })
+        .catch(function(error){
+            console.log("Get speakers failed: "+(error.message || error));
+            throw error;
+        });
+}
+
+function getPersonsWithIds(ids, projection){
+    return getCollection("Persons")
+        .then(function(collection){
+            return nsend(collection, 'find', {_id: {$in: ids}}, projection);
+        })
+        .then(function(cursor){
+            return nsend(cursor, 'toArray');
+        })
+        .then(function(items){
+            reportArray("Speakers", items);
+        });
+}
 
 function roomMapper(item){
     return {
@@ -142,13 +173,16 @@ function displayStats(){
     console.log("\n=== STATS ===");
     console.log(JSON.stringify(stats, null, 2));
 }
+function getCollection(collectionName){
+    return nsend(db, 'collection', collectionName);
+}
 function getCleanCollection(collectionName){
     var getCollection = function(){return nsend(db, 'collection', collectionName);};
 
     return getCollection()
         .then(function(collection) {
             // 'drop' is faster than 'remove' and kills indexes
-            return nsend(collection, "drop");
+            return nsend(collection, 'drop');
         })
         // whether 'drop' succeeds or fails, create the new collection
         .then(getCollection, getCollection)
@@ -168,6 +202,21 @@ function insertCollection(collection, data){
     return nsend(collection, 'insert', data)
         .then(function(){
             return collection});
+}
+function reportArray(name, items){
+    if (!items || items.length === 0) {
+        throw new Error("Expected some '" + name + "' items; didn't get them");
+    }
+    var count = items.length;
+    console.log("Got "+count+" '"+name+"' item(s)");
+    if (count>3){
+        console.log("First three from '"+name+"':");
+        console.dir(items.slice(0,3),'items');
+        console.log("...");
+    } else {
+        console.dir(items,'items') ;
+    }
+    stats[name] = items.length;
 }
 function reportError(err){
     console.log('!!! run error:');
@@ -192,19 +241,7 @@ function verifyCollection(collection){
         })
         .then(function(items){
             var collectionName = collection.collectionName;
-            if (!items || items.length === 0) {
-                throw new Error("Expected some '" + collectionName + "' items; didn't get them");
-            }
-            var count = items.length;
-            console.log("Got "+count+" '"+collectionName+"' item(s)");
-            if (count>3){
-                console.log("First three from '"+collectionName+"':");
-                console.dir(items.slice(0,3),'items');
-                console.log("...");
-            } else {
-                console.dir(items,'items') ;
-            }
-            stats[collectionName] = count;
+            reportArray(collectionName, items);
             return collection;
         });
 }
