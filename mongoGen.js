@@ -4,101 +4,124 @@ console.log("Hello, Code Camper MongoDb Generator");
 console.log("Remember to first start cc-angular server so the generator can hit the Web API");
 console.log("Generator version: 0.1.0" );
 
-require('./najaxAdapter');
+/* Breeze config */
 var breeze = require('./breeze.debug');
-var mongo = require('mongodb');
-var ObjectID = mongo.ObjectID;
+require('./najaxAdapter'); // adapts breeze to use the najax adapter for XHR calls
+breeze.config.initializeAdapterInstance('ajax', 'najax', true);
+breeze.NamingConvention.camelCase.setAsDefault();
 
+// Entity source data comes from CC-Angular Web API/SQL server
+var webApiServiceName = "http://localhost:58576/breeze/breeze";
+var em = new breeze.EntityManager(webApiServiceName);
+
+/* Mongo config */
+var mongo = require('mongodb');
+var server = new mongo.Server('localhost', 27017, {auto_reconnect: true});
+var db = new mongo.Db('ngCodeCamper', server, {fsync:true}); //{safe: false});
+var ObjectID = mongo.ObjectID; // Don't need this?
+
+// nsend is Q.js helper to convert node async operation into a Q promise
 var Q = require('q');
 var nsend = Q.nsend;
-var db, em;
-var webApiServiceName = "http://localhost:58576/breeze/breeze";
 
+// Stats from this run
 var stats = {
-    start: Date.now(),
-    end: Date.now()
+    start: null,
+    end: null
 }
-function run(){
-    var server = new mongo.Server('localhost', 27017, {auto_reconnect: true});
-    db = new mongo.Db('ngCodeCamper', server, {fsync:true}); //{safe: false});
 
-    return nsend(db,'open')
-        .then(lookups)
-        .fail(reportError)
-        .fin(function(){ db.close(); console.log('Closing database')})
-        .fin(displayStats);
-}
 run();
 
 //*** Private functions
+function run(){
+
+    stats.start = Date.now();
+    return nsend(db,'open')
+        .then(function(){return Q.all([
+            lookups(),
+            transfer('Persons', personMapper),
+            transfer('Sessions', sessionMapper)
+        ]);})
+        .fail(reportError)
+        .fin(function(){ db.close(); console.log('Closing database');})
+        .fin(displayStats);
+}
+
 function lookups(){
 
-    breeze.config.initializeAdapterInstance('ajax', 'najax', true);
-    breeze.NamingConvention.camelCase.setAsDefault();
-
-    em = new breeze.EntityManager(webApiServiceName);
     return new breeze.EntityQuery('Lookups')
         .using(em).execute()
         .then(function(data) {
             var lookups = data.results[0];
             console.log("Got lookups")
             return Q.all([
-                writeRooms(lookups.rooms),
-                writeTimeSlots(lookups.timeslots),
-                writeTracks(lookups.tracks)
+                writeCollection('Rooms', roomMapper, lookups.rooms),
+                writeCollection('TimeSlots', timeSlotMapper, lookups.timeslots),
+                writeCollection('Tracks', trackMapper, lookups.tracks)
             ]);
         }).catch(function(error){
             console.log("Lookups fetch failed: "+(error.message || error));
             console.log("Is the CC Web Api server running");
             throw error;
         });
+}
 
-    function writeRooms( items){
-        return getCleanCollection('Rooms')
-            .then(function(collection){
-                var mStuff = [];
-                items.forEach(function(item){
-                    mStuff.push({
-                        _id: item.id,
-                        name: item.name
-                    });
-                });
-                return insertCollection(collection, mStuff);
-            })
-            .then(confirmSave);
-    }
-    function writeTimeSlots( items){
-        return getCleanCollection('TimeSlots')
-            .then(function(collection){
-                var mStuff = [];
-                items.forEach(function(item){
-                    mStuff.push({
-                        _id: item.id,
-                        start: item.start,
-                        isSessionSlot: item.isSessionSlot,
-                        duration: item.duration
-                    });
-                });
-                return insertCollection(collection, mStuff);
-            })
-            .then(confirmSave);
-    }
-    function writeTracks( items){
-        return getCleanCollection('Tracks')
-            .then(function(collection){
-                var mStuff = [];
-                items.forEach(function(item){
-                    mStuff.push({
-                        _id: item.id,
-                        name: item.name
-                    });
-                });
-                return insertCollection(collection, mStuff);
-            })
-            .then(confirmSave);
+
+function roomMapper(item){
+    return {
+        _id: item.id,
+        name: item.name
     }
 }
 
+function timeSlotMapper(item){
+    return {
+        _id: item.id,
+        start: item.start,
+        isSessionSlot: item.isSessionSlot,
+        duration: item.duration
+    }
+}
+
+function trackMapper(item){
+    return {
+        _id: item.id,
+        name: item.name
+    }
+}
+
+function personMapper(item){
+    return {
+        _id: item.id,
+        firstName: item.firstName,
+        lastName: item.lastName,
+        email: item.email,
+        blog: item.blog,
+        twitter: item.twitter,
+        gender: item.gender,
+        imageSource: item.imageSource,
+        bio: item.bio
+    }
+}
+
+function sessionMapper(item){
+    return {
+        _id: item.id,
+        title: item.title,
+        code: item.code,
+        speakerId: item.speakerId,
+        trackId: item.trackId,
+        timeSlotId: item.timeSlotId,
+        roomId: item.roomId,
+        level: item.level,
+        tags: item.tags,
+        description: item.description
+    }
+}
+
+/*** Utility functions ***/
+
+// Less verbose alternative to 'verifyCollection'
 function confirmSave(collection){
     var cname = collection.collectionName;
     return nsend(collection, "find")
@@ -114,10 +137,11 @@ function confirmSave(collection){
             return(collection);
         });
 }
-
-
-
-//*** Utility functions ***
+function displayStats(){
+    stats.end = Date.now();
+    console.log("\n=== STATS ===");
+    console.log(JSON.stringify(stats, null, 2));
+}
 function getCleanCollection(collectionName){
     var getCollection = function(){return nsend(db, 'collection', collectionName);};
 
@@ -145,6 +169,22 @@ function insertCollection(collection, data){
         .then(function(){
             return collection});
 }
+function reportError(err){
+    console.log('!!! run error:');
+    console.dir(err);
+}
+function transfer(resourceName, mapper){
+    return new breeze.EntityQuery(resourceName)
+        .using(em).execute()
+        .then(function(data) {
+            console.log("Got "+resourceName)
+            return writeCollection(resourceName, mapper, data.results);
+        }).catch(function(error){
+            console.log(resourceName + " fetch failed: "+(error.message || error));
+            throw error;
+        });
+}
+// verify that the Mongo collection was written and display first 3 items
 function verifyCollection(collection){
     return nsend(collection, 'find')
         .then(function(cursor){
@@ -164,18 +204,15 @@ function verifyCollection(collection){
             } else {
                 console.dir(items,'items') ;
             }
-            app.stats[collectionName] = count;
+            stats[collectionName] = count;
             return collection;
         });
 }
-
-function reportError(err){
-    console.log('!!! run error:');
-    console.dir(err);
+function writeCollection(collectionName, mapper, items){
+    return getCleanCollection(collectionName)
+        .then(function(collection){
+            var mapped = items.map(mapper);
+            return insertCollection(collection, mapped);
+        })
+        .then(verifyCollection);
 }
-
-function displayStats(){
-    console.log("\n=== STATS ===");
-    console.log(JSON.stringify(stats, null, 2));
-}
-
