@@ -37,6 +37,9 @@ function run(){
 
     stats.start = Date.now();
     return nsend(db,'open')
+        .then(function(){
+            nsend(db,'dropDatabase');
+        })
         .then(function(){return Q.all([
             lookups(),
             transfer('Persons', personMapper),
